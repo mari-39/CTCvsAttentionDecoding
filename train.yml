@@ -1,0 +1,145 @@
+# network architecture
+
+# frontend related
+# This is a configuration file for training an ASR model using ESPnet.
+# It specifies the architecture, optimization settings, and data processing parameters.
+# The model uses a conformer encoder and a transformer decoder with hybrid CTC/attention loss
+# Since we compare CTC and attention decoding, we keep the encoder input identical. 80-dim log-mel is ESPnet's default input representation.
+frontend: default
+frontend_conf:
+    n_fft: 512 # Number of FFT points for STFT, 32 ms @ 16 kHz
+    win_length: 400 # Window length for STFT, 25 ms @ 16 kHz
+    hop_length: 160 # Hop length for STFT, 10 ms @ 16 kHz
+
+# this configures how audio is converted to spectrograms -> the input
+# representation for the neural network
+
+
+# encoder related
+# The encoder is a conformer model, which combines convolutional and self-attention mechanisms.
+# It consists of 12 blocks with a linear unit size of 2048 and an output size of 256.
+# The attention mechanism uses 4 heads, and the model employs relative positional encoding.
+# The activation function is Swish, and it uses a macaron style with CNN modules
+# with a kernel size of 15. 
+# A conformer combines the strengths of convolutional neural networks (CNNs, local feature extraction) and transformers (long-range dependencies).
+# Why conformer?
+# Convolution (local invariance, which means it can recognize patterns regardless of their position in the input sequence) is good for local feature extraction, while self-attention (global invariance, which means it can capture long-range dependencies) is good for long-range dependencies.
+# This is particularly good for small datasets, because the CNN module works as an inductive bias (i.e., it helps the model generalize better from limited data), and SpecAugment makes it robust to noise.
+
+encoder: conformer
+encoder_conf:
+    input_layer: conv2d # strided 2-D CNN front
+    num_blocks: 12
+    linear_units: 2048 # FFN inner-dim 
+    dropout_rate: 0.1
+    output_size: 256 # hidden dim per frame
+    attention_heads: 4
+    attention_dropout_rate: 0.0
+    pos_enc_layer_type: rel_pos
+    selfattention_layer_type: rel_selfattn
+    activation_type: swish
+    macaron_style: true
+    use_cnn_module: true
+    cnn_module_kernel: 15
+
+
+# decoder related
+# The decoder is a transformer model with 6 blocks, each having a linear unit size of 2048.
+# It uses an embedding layer for input and has a dropout rate of 0.1.
+# The transformer decoder is designed to handle sequential data.
+decoder_conf:
+    input_layer: embed 
+    num_blocks: 6
+    linear_units: 2048
+    dropout_rate: 0.1
+
+# The decoder generates text sequences from the encoded audio features.
+
+# hybrid CTC/attention
+# The model uses a hybrid CTC/attention mechanism for training.
+# CTC (Connectionist Temporal Classification) is used for sequence-to-sequence tasks where the alignment between input and output sequences is not known.
+# The attention mechanism allows the model to focus on specific parts of the input sequence when generating each output token.
+# Therefore it provides better sequence modeling.
+# The CTC weight is set to 0.3, and the label smoothing weight is set to 0.1.
+# This weight can be adjusted to compare CTC and attention decoding.
+
+# Length
+# ctc weight 1 - pure CTC, no auto-reg decoding -> can test greedy CTC decoding
+# ctc weight 0 - pure attention, no CTC loss -> can test autoreg decoding
+# ctc_weight: 0.3 - 
+model_conf:
+    ctc_weight: 0.3 # 0.3 * CTC loss + 0.7 * attention loss
+    lsm_weight: 0.1 # label smoothing weight, which helps prevent overfitting by smoothing the target labels
+    length_normalized_loss: false
+
+# optimization related
+# The optimizer used is Adam with a learning rate of 4.0.
+# Gradient accumulation is set to 1, meaning gradients are updated after each batch.
+# Gradient clipping is set to 3 to prevent exploding gradients.
+# The maximum number of epochs for training is set to 50.
+# The Noam learning rate scheduler is used with a model size of 256 and a warmup period of 25000 steps.
+# The Noam scheduler gradually increases the learning rate during the warmup phase and then decreases it.
+# This helps stabilize training in the initial stages.
+optim: adam
+accum_grad: 1
+grad_clip: 3
+max_epoch: 50
+optim_conf:
+    lr: 4.0 #  # This is NOT a raw LR!  ESPnet’s Noam LR = scale * d_model^-0.5
+scheduler: noamlr
+scheduler_conf:
+    model_size: 256
+    warmup_steps: 25000
+
+# minibatch related
+# The batch size is set to 32, and the batch type is set to 'numel', meaning the number of elements in the batch is considered.
+# The number of bins for batching is set to 10 million, which helps in efficient data loading and processing.
+# This configuration allows the model to handle large datasets efficiently.
+
+# minibatch
+# the batch means the number of samples in each training step. The type of batch is 'numel', which means the batch size is determined by the total number of elements in the batch.
+# The batch_bins parameter specifies the number of bins for batching, which is set to 10 million.
+batch_type: numel
+batch_bins: 10000000
+
+# the best_model_criterion specifies the metric used to select the best model during training.
+# In this case, it uses validation accuracy ('valid' and 'acc') and selects the maximum value.
+# This means the model with the highest validation accuracy will be saved as the best model.
+# The keep_nbest_models parameter specifies how many of the best models to keep during training.
+best_model_criterion:
+-   - valid
+    - acc
+    - max
+keep_nbest_models: 3
+# valid/acc in ESPnet = 1 – WER during dev decoding (because higher = better).
+
+
+# SpeAugment is a data augmentation technique that applies various transformations to the input audio data.
+# It includes time warping, frequency masking, and time masking to improve the model's robustness. 
+# It masks certain frequency bands and time segments in the spectrogram to simulate noise and variability in the data.
+# This helps the model generalize better to unseen data.
+# The configuration specifies that time warping is applied with a window size of 5, frequency masking is applied with a width range of 0 to 30, and time masking is applied with a width range of 0 to 40.
+# The number of frequency masks is set to 2, and the number of time masks is set to 2.
+# The time warping mode is set to bicubic interpolation, which provides smooth transformations.
+
+specaug: specaug # Data augmentation
+specaug_conf: 
+    apply_time_warp: true
+    time_warp_window: 5
+    time_warp_mode: bicubic
+    apply_freq_mask: true
+    freq_mask_width_range:
+    - 0
+    - 30
+    num_freq_mask: 2
+    apply_time_mask: true
+    time_mask_width_range:
+    - 0
+    - 40
+    num_time_mask: 2
+    
+
+# The training process will not use any visualization tools like Matplotlib or TensorBoard as of now.
+# But in the future, we will work on this.
+use_matplotlib: false
+use_tensorboard: false
